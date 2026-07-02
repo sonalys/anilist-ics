@@ -410,7 +410,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", handleIndex)
+	// mux.HandleFunc("/", handleIndex)
 	mux.HandleFunc("/api/subscribe", handleSubscribe)
 	mux.HandleFunc("/calendar/", handleCalendar)
 
