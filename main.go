@@ -6,8 +6,6 @@
 // watching list, showing upcoming airing episodes.
 //
 // Endpoints:
-//   GET  /                         - small HTML page with a form
-//   POST /api/subscribe            - { "username": "..." } -> { "calendar_url": "..." }
 //   GET  /calendar/<username>.ics  - the dynamically generated ICS feed
 //
 // Run:  go run main.go
@@ -29,72 +27,13 @@ import (
 	"time"
 )
 
-const anilistEndpoint = "https://graphql.anilist.co"
+const (
+	cacheTTL        = 30 * time.Minute
+	anilistEndpoint = "https://graphql.anilist.co"
 
-// ---------------------------------------------------------------------------
-// AniList GraphQL types
-// ---------------------------------------------------------------------------
-
-type gqlRequest struct {
-	Query     string         `json:"query"`
-	Variables map[string]any `json:"variables"`
-}
-
-type mediaTitle struct {
-	Romaji  string `json:"romaji"`
-	English string `json:"english"`
-	Native  string `json:"native"`
-}
-
-type airingNode struct {
-	AiringAt        int64 `json:"airingAt"`
-	Episode         int   `json:"episode"`
-	TimeUntilAiring int   `json:"timeUntilAiring"`
-}
-
-type airingSchedule struct {
-	Nodes []airingNode `json:"nodes"`
-}
-
-type media struct {
-	ID             int            `json:"id"`
-	Title          mediaTitle     `json:"title"`
-	SiteURL        string         `json:"siteUrl"`
-	Episodes       int            `json:"episodes"`
-	Duration       int            `json:"duration"`
-	AiringSchedule airingSchedule `json:"airingSchedule"`
-}
-
-type listEntry struct {
-	Media media `json:"media"`
-}
-
-type mediaList struct {
-	Entries []listEntry `json:"entries"`
-}
-
-type mediaListCollection struct {
-	Lists []mediaList `json:"lists"`
-}
-
-type gqlResponse struct {
-	Data struct {
-		MediaListCollection mediaListCollection `json:"MediaListCollection"`
-	} `json:"data"`
-	Errors []struct {
-		Message string `json:"message"`
-	} `json:"errors"`
-}
-
-// ---------------------------------------------------------------------------
-// AniList fetch
-// ---------------------------------------------------------------------------
-
-// Note: AniList uses CURRENT for "Watching", not WATCHING.
-// We also fetch PAUSED and REPEATING in case the user wants upcoming episodes for those.
-const watchlistQuery = `
+	watchlistQuery = `
 query ($userName: String) {
-  MediaListCollection(userName: $userName, type: ANIME, status_in: [CURRENT, PAUSED, REPEATING]) {
+  MediaListCollection(userName: $userName, type: ANIME, status_in: [CURRENT, PAUSED, REPEATING, PLANNING]) {
     lists {
       entries {
         media {
@@ -115,6 +54,58 @@ query ($userName: String) {
     }
   }
 }`
+)
+
+type (
+	gqlRequest struct {
+		Query     string         `json:"query"`
+		Variables map[string]any `json:"variables"`
+	}
+
+	media struct {
+		ID    int `json:"id"`
+		Title struct {
+			Romaji  string `json:"romaji"`
+			English string `json:"english"`
+			Native  string `json:"native"`
+		} `json:"title"`
+		SiteURL        string `json:"siteUrl"`
+		Episodes       int    `json:"episodes"`
+		Duration       int    `json:"duration"`
+		AiringSchedule struct {
+			Nodes []struct {
+				AiringAt        int64 `json:"airingAt"`
+				Episode         int   `json:"episode"`
+				TimeUntilAiring int   `json:"timeUntilAiring"`
+			} `json:"nodes"`
+		} `json:"airingSchedule"`
+	}
+
+	gqlResponse struct {
+		Data struct {
+			MediaListCollection struct {
+				Lists []struct {
+					Entries []struct {
+						Media media `json:"media"`
+					} `json:"entries"`
+				} `json:"lists"`
+			} `json:"MediaListCollection"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+
+	cacheEntry struct {
+		medias []media
+		at     time.Time
+	}
+)
+
+var (
+	cacheMu sync.RWMutex
+	cache   = make(map[string]cacheEntry)
+)
 
 func fetchUserAiring(username string) ([]media, error) {
 	body := gqlRequest{
@@ -165,22 +156,6 @@ func fetchUserAiring(username string) ([]media, error) {
 	return out, nil
 }
 
-// ---------------------------------------------------------------------------
-// Cache
-// ---------------------------------------------------------------------------
-
-type cacheEntry struct {
-	medias []media
-	at     time.Time
-}
-
-var (
-	cacheMu sync.RWMutex
-	cache   = make(map[string]cacheEntry)
-)
-
-const cacheTTL = 30 * time.Minute
-
 func getCached(username string) ([]media, error) {
 	cacheMu.RLock()
 	if c, ok := cache[username]; ok && time.Since(c.at) < cacheTTL {
@@ -198,10 +173,6 @@ func getCached(username string) ([]media, error) {
 	cacheMu.Unlock()
 	return m, nil
 }
-
-// ---------------------------------------------------------------------------
-// ICS generation (RFC 5545)
-// ---------------------------------------------------------------------------
 
 func escapeICS(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
@@ -269,13 +240,23 @@ func generateICS(username string, medias []media) string {
 			desc := fmt.Sprintf("Episode %d of %s\n%s", n.Episode, title, m.SiteURL)
 
 			b.WriteString("BEGIN:VEVENT\r\n")
-			b.WriteString(foldICS("UID:"+uid) + "\r\n")
-			b.WriteString("DTSTAMP:" + stamp + "\r\n")
-			b.WriteString("DTSTART:" + start.Format("20060102T150405Z") + "\r\n")
-			b.WriteString("DTEND:" + end.Format("20060102T150405Z") + "\r\n")
-			b.WriteString(foldICS("SUMMARY:"+escapeICS(summary)) + "\r\n")
-			b.WriteString(foldICS("DESCRIPTION:"+escapeICS(desc)) + "\r\n")
-			b.WriteString(foldICS("URL:"+m.SiteURL) + "\r\n")
+			b.WriteString(foldICS("UID:" + uid))
+			b.WriteString("\r\n")
+			b.WriteString("DTSTAMP:")
+			b.WriteString(stamp)
+			b.WriteString("\r\n")
+			b.WriteString("DTSTART:")
+			b.WriteString(start.Format("20060102T150405Z"))
+			b.WriteString("\r\n")
+			b.WriteString("DTEND:")
+			b.WriteString(end.Format("20060102T150405Z"))
+			b.WriteString("\r\n")
+			b.WriteString(foldICS("SUMMARY:" + escapeICS(summary)))
+			b.WriteString("\r\n")
+			b.WriteString(foldICS("DESCRIPTION:" + escapeICS(desc)))
+			b.WriteString("\r\n")
+			b.WriteString(foldICS("URL:" + m.SiteURL))
+			b.WriteString("\r\n")
 			b.WriteString("STATUS:CONFIRMED\r\n")
 			b.WriteString("END:VEVENT\r\n")
 		}
@@ -283,94 +264,6 @@ func generateICS(username string, medias []media) string {
 
 	b.WriteString("END:VCALENDAR\r\n")
 	return b.String()
-}
-
-// ---------------------------------------------------------------------------
-// HTTP handlers
-// ---------------------------------------------------------------------------
-
-const indexHTML = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>AniList Calendar</title>
-  <style>
-    body{font-family:system-ui,sans-serif;max-width:640px;margin:3rem auto;padding:0 1rem;line-height:1.5}
-    code{background:#eee;padding:.15em .35em;border-radius:3px}
-    form{margin:1rem 0}
-    input[type=text]{padding:.4rem;font-size:1rem}
-    button{padding:.4rem .8rem;font-size:1rem;cursor:pointer}
-  </style>
-</head>
-<body>
-  <h1>AniList → ICS Calendar</h1>
-  <p>Get a calendar feed of upcoming episodes for every airing show on your
-  AniList <em>Watching</em> list. The feed updates automatically — subscribe
-  once in Google Calendar, Proton Calendar, Apple Calendar, etc.</p>
-
-  <form onsubmit="window.location.href='/calendar/'+encodeURIComponent(document.getElementById('u').value)+'.ics';return false;">
-    <label>AniList username:
-      <input id="u" type="text" placeholder="your_username" required>
-    </label>
-    <button type="submit">Open my calendar</button>
-  </form>
-
-  <p>Or use the JSON API:</p>
-  <pre><code>POST /api/subscribe
-Content-Type: application/json
-
-{"username":"your_username"}</code></pre>
-
-  <p>Then subscribe to the returned URL via your calendar client's
-  <em>Add by URL</em> option.</p>
-
-  <p>Note: the URL must be publicly reachable for Google Calendar to sync.</p>
-</body>
-</html>`
-
-func handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	io.WriteString(w, indexHTML)
-}
-
-func handleSubscribe(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var body struct {
-		Username string `json:"username"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid JSON", http.StatusBadRequest)
-		return
-	}
-	if strings.TrimSpace(body.Username) == "" {
-		http.Error(w, `"username" required`, http.StatusBadRequest)
-		return
-	}
-	body.Username = strings.TrimSpace(body.Username)
-
-	path := "/calendar/" + url.PathEscape(body.Username) + ".ics"
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	if p := r.Header.Get("X-Forwarded-Proto"); p != "" {
-		scheme = p
-	}
-	full := fmt.Sprintf("%s://%s%s", scheme, r.Host, path)
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
-		"username":     body.Username,
-		"calendar_url": path,
-		"full_url":     full,
-	})
 }
 
 func handleCalendar(w http.ResponseWriter, r *http.Request) {
@@ -396,12 +289,9 @@ func handleCalendar(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf(`attachment; filename="%s.ics"`, url.PathEscape(username)))
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 	w.Header().Set("Refresh-Interval", "PT1H")
+
 	io.WriteString(w, ics)
 }
-
-// ---------------------------------------------------------------------------
-// main
-// ---------------------------------------------------------------------------
 
 func main() {
 	port := os.Getenv("PORT")
@@ -410,8 +300,6 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	// mux.HandleFunc("/", handleIndex)
-	mux.HandleFunc("/api/subscribe", handleSubscribe)
 	mux.HandleFunc("/calendar/", handleCalendar)
 
 	addr := ":" + port
