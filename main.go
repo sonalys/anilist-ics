@@ -9,7 +9,7 @@
 //   GET  /calendar/<username>?offset=<duration>  - the dynamically generated ICS feed
 //
 // Run:  go run main.go
-//   (optionally set PORT env var, default 4134)
+//   (optionally set PORT env var, default 4314)
 
 package main
 
@@ -271,10 +271,21 @@ func generateICS(
 }
 
 func handleCalendar(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/calendar/")
+	const prefix = "/calendar/"
+	if !strings.HasPrefix(r.URL.Path, prefix) {
+		http.NotFound(w, r)
+		return
+	}
 
-	username, err := url.PathUnescape(path)
-	if err != nil || username == "" {
+	raw := strings.TrimPrefix(r.URL.Path, prefix)
+	raw = strings.Trim(raw, "/")
+	if raw == "" {
+		http.Error(w, "invalid username", http.StatusBadRequest)
+		return
+	}
+
+	username, err := url.PathUnescape(raw)
+	if err != nil {
 		http.Error(w, "invalid username", http.StatusBadRequest)
 		return
 	}
@@ -308,7 +319,7 @@ func handleCalendar(w http.ResponseWriter, r *http.Request) {
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "4134"
+		port = "4314"
 	}
 
 	mux := http.NewServeMux()

@@ -27,7 +27,7 @@ WORKDIR /bin
 COPY --from=builder /app/bin/server .
 
 # Expose the port your Go app listens on
-EXPOSE 4134
+EXPOSE 4314
 
 # Run the binary
 CMD ["server"]
