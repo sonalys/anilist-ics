@@ -1,0 +1,10 @@
+version: "3.9"
+
+services:
+  anilist-ics:
+    build: .
+    image: anilist-ics:latest
+    container_name: anilist-ics
+    ports:
+      - "4314:4314"
+    restart: unless-stopped
