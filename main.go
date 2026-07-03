@@ -6,10 +6,10 @@
 // watching list, showing upcoming airing episodes.
 //
 // Endpoints:
-//   GET  /calendar/<username>.ics  - the dynamically generated ICS feed
+//   GET  /calendar/<username>?offset=<duration>  - the dynamically generated ICS feed
 //
 // Run:  go run main.go
-//   (optionally set PORT env var, default 8080)
+//   (optionally set PORT env var, default 4134)
 
 package main
 
@@ -200,7 +200,11 @@ func foldICS(s string) string {
 	return b.String()
 }
 
-func generateICS(username string, medias []media) string {
+func generateICS(
+	username string,
+	medias []media,
+	offset time.Duration,
+) string {
 	var b strings.Builder
 	b.WriteString("BEGIN:VCALENDAR\r\n")
 	b.WriteString("VERSION:2.0\r\n")
@@ -229,11 +233,11 @@ func generateICS(username string, medias []media) string {
 		}
 
 		for _, n := range m.AiringSchedule.Nodes {
-			start := time.Unix(n.AiringAt, 0).UTC()
+			start := time.Unix(n.AiringAt, 0).UTC().Add(offset)
 			if start.Before(time.Now().Add(-24 * time.Hour)) {
 				continue
 			}
-			end := start.Add(time.Duration(duration) * time.Minute)
+			end := start.Add(time.Duration(duration) * time.Minute).Add(offset)
 
 			uid := fmt.Sprintf("anilist-%d-ep%d@anilist-calendar", m.ID, n.Episode)
 			summary := fmt.Sprintf("%s - Episode %d", title, n.Episode)
@@ -268,7 +272,7 @@ func generateICS(username string, medias []media) string {
 
 func handleCalendar(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/calendar/")
-	path = strings.TrimSuffix(path, ".ics")
+
 	username, err := url.PathUnescape(path)
 	if err != nil || username == "" {
 		http.Error(w, "invalid username", http.StatusBadRequest)
@@ -282,7 +286,15 @@ func handleCalendar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ics := generateICS(username, medias)
+	params := r.URL.Query()
+	offset := time.Duration(0)
+	if offsetStr := params.Get("offset"); offsetStr != "" {
+		if d, err := time.ParseDuration(offsetStr); err == nil {
+			offset = d
+		}
+	}
+
+	ics := generateICS(username, medias, offset)
 
 	w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
 	w.Header().Set("Content-Disposition",
@@ -296,7 +308,7 @@ func handleCalendar(w http.ResponseWriter, r *http.Request) {
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8080"
+		port = "4134"
 	}
 
 	mux := http.NewServeMux()
