@@ -42,7 +42,7 @@ query ($userName: String) {
           siteUrl
           episodes
           duration
-          airingSchedule(notYetAired: true) {
+          airingSchedule {
             nodes {
               airingAt
               episode
@@ -234,9 +234,6 @@ func generateICS(
 
 		for _, n := range m.AiringSchedule.Nodes {
 			start := time.Unix(n.AiringAt, 0).UTC().Add(offset)
-			if start.Before(time.Now().Add(-24 * time.Hour)) {
-				continue
-			}
 			end := start.Add(time.Duration(duration) * time.Minute).Add(offset)
 
 			uid := fmt.Sprintf("anilist-%d-ep%d@anilist-calendar", m.ID, n.Episode)
